@@ -8,7 +8,7 @@
 
 #define EVENT_LOOP_INLINE               __attribute__((always_inline)) static inline 
 #define EVENT_TYPE_NAME_LEN             16
-#define EVENT_LOOP_DEFAULT_MAX_FD       1024
+#define EVENT_LOOP_MAX_SHIFT_BITS       10
 
 typedef struct event_loop_s event_loop_t;
 typedef struct event_type_s event_type_t;
@@ -40,6 +40,8 @@ struct event_loop_s {
     struct list_head    event_head;
 
     struct list_head    event_unused;
+
+    event_type_t       *event_current;
 
     int                 epoll_fd;
     int                 epoll_volume;

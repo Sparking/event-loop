@@ -14,9 +14,9 @@ static int event_loop_count_epoll_size(const int fd)
 {
     int result;
 
-    result = ((fd + EVENT_LOOP_DEFAULT_MAX_FD) >> 10) << 10;
+    result = ((fd >> (EVENT_LOOP_MAX_SHIFT_BITS)) + 1) << (EVENT_LOOP_MAX_SHIFT_BITS);
     if (result < 0) {
-        return INT_MAX - 1;
+        result = INT_MAX - 1;
     }
 
     return result;
@@ -118,6 +118,7 @@ event_loop_t *event_loop_create(void)
     event_loop->event_size = 0;
     INIT_LIST_HEAD(&event_loop->event_head);
     INIT_LIST_HEAD(&event_loop->event_unused);
+    event_loop->event_current = NULL
     event_loop->epoll_fd = -1;
     event_loop->epoll_fd_max = -1;
     event_loop->epoll_volume = -1;
@@ -140,6 +141,7 @@ void event_loop_destroy(event_loop_t *event_loop)
         return;
     }
 
+    event_loop->event_current = NULL;
     list_for_each_entry_safe(event, tmp, &event_loop->event_head, node) {
         event_loop_cancel(event);
     }
@@ -275,6 +277,12 @@ event_type_t *event_loop_create_loop_timer_itimerspec(event_loop_t *event_loop,
     return event;
 }
 
+static void event_loop_remove_unused_event(event_type_t *event)
+{
+    list_del(&event->node);
+    free(event);
+}
+
 void event_loop_cancel(event_type_t *event)
 {
     if (event == NULL) {
@@ -293,12 +301,12 @@ void event_loop_cancel(event_type_t *event)
         (void)close(event->fd);
         break;
     }
-}
 
-static void event_loop_remove_unused_event(event_type_t *event)
-{
-    list_del(&event->node);
-    free(event);
+    if (event->loop->event_current != event) {
+        event_loop_remove_unused_event(event);
+    } else {
+        event->flag |= EVENT_F_CANCEL;
+    }
 }
 
 event_type_t *event_loop_wait(event_loop_t *event_loop)
@@ -311,6 +319,7 @@ event_type_t *event_loop_wait(event_loop_t *event_loop)
         return NULL;
     }
 
+    event_loop->event_current = NULL;
     cnt = event_loop->epoll_get_cnt;
     if (cnt <= 0) {
         (void)memset(event_loop->epoll_events, 0,
@@ -318,17 +327,22 @@ event_type_t *event_loop_wait(event_loop_t *event_loop)
         list_for_each_entry_safe(unused, event, &event_loop->event_unused, node) {
             event_loop_remove_unused_event(unused);
         }
+
         while (1) {
             cnt = epoll_wait(event_loop->epoll_fd, event_loop->epoll_events,
                     event_loop->epoll_fd_max, 0);
-            if (cnt < 0 && errno != EINTR) {
-                return NULL;
-            } else if (cnt == 0) {
-                if (event_loop->event_size == 0) {
-                    return NULL;
+            if (cnt < 0) {
+                if (errno == EINTR) {
+                    continue;
                 }
 
-                continue;
+                return NULL;
+            } else if (cnt == 0) {
+                if (event_loop->event_size != 0) {
+                    continue;
+                }
+
+                return NULL;
             }
 
             break;
@@ -337,6 +351,7 @@ event_type_t *event_loop_wait(event_loop_t *event_loop)
 
     event_loop->epoll_get_cnt = --cnt;
     event = (event_type_t *)event_loop->epoll_events[cnt].data.ptr;
+    event_loop->event_current = event;
 
     return event;
 }
@@ -372,6 +387,9 @@ int event_loop_deal_event(event_type_t *event)
     ret = event->handler(event);
     if (event->flag & EVENT_F_ONESHOT) {
         event_loop_cancel(event);
+    }
+
+    if (event->flag & EVENT_F_CANCEL) {
         event_loop_remove_unused_event(event);
     }
 
