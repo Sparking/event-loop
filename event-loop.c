@@ -118,7 +118,7 @@ event_loop_t *event_loop_create(void)
     event_loop->event_size = 0;
     INIT_LIST_HEAD(&event_loop->event_head);
     INIT_LIST_HEAD(&event_loop->event_unused);
-    event_loop->event_current = NULL
+    event_loop->event_current = NULL;
     event_loop->epoll_fd = -1;
     event_loop->epoll_fd_max = -1;
     event_loop->epoll_volume = -1;
