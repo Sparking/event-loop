@@ -4,6 +4,7 @@
 #include <time.h>
 #include <stddef.h>
 #include <sys/epoll.h>
+#include <sys/types.h>
 #include "list.h"
 
 #define EVENT_LOOP_INLINE               __attribute__((always_inline)) static inline 
@@ -18,6 +19,14 @@ enum event_type_e {
     EVENT_TYPE_READ,
     EVENT_TYPE_WRITE,
     EVENT_TYPE_TIMER,
+    EVENT_TYPE_SIGNAL,
+    EVENT_TYPE_LINUX_EVENT,
+};
+
+union event_type_data_u {
+    void               *ptr;
+    int                 signo;
+    uint64_t            timer_count;
 };
 
 struct event_type_s {
@@ -32,6 +41,8 @@ struct event_type_s {
 
     int                 flag;
     int                 fd;
+    union event_type_data_u
+                        data;
     char                name[EVENT_TYPE_NAME_LEN];
 };
 
@@ -58,6 +69,11 @@ EVENT_LOOP_INLINE int event_loop_event_fd(event_type_t *event)
 EVENT_LOOP_INLINE void *event_loop_event_arg(event_type_t *event)
 {
     return event->arg;
+}
+
+EVENT_LOOP_INLINE int event_loop_event_signo(event_type_t *event)
+{
+    return event->data.signo;
 }
 
 EVENT_LOOP_INLINE const char *event_loop_event_name(event_type_t *event)
@@ -93,7 +109,7 @@ extern event_type_t *event_loop_create_loop_timer_itimerspec(event_loop_t *event
 extern event_type_t *event_loop_create_signal(event_loop_t *event_loop,
         event_func_t handler, const char *name, void *arg, int fd, const sigset_t *mask);
 
-extern event_type_t *event_loop_create_event(event_loop_t *event_loop,
+extern event_type_t *event_loop_create_linux_event(event_loop_t *event_loop,
         event_func_t handler, const char *name, void *arg);
 
 extern void event_loop_cancel(event_type_t *event);

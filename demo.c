@@ -1,8 +1,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-
+#include <signal.h>
 #include "event-loop.h"
+
+static int singal_cb(event_type_t *event)
+{
+    int signo;
+
+    signo = event_loop_event_signo(event);
+    if (signo == SIGINT) {
+        printf("get intterrupt\n");
+    } else {
+        printf("get signal: %d\n", signo);
+    }
+
+    printf("signal exit\n");
+
+    return 0;
+}
 
 static int timer(event_type_t *event)
 {
@@ -32,6 +48,7 @@ static int timer(event_type_t *event)
 
 int main(void)
 {
+    sigset_t mask;
     event_loop_t *loop;
     event_type_t *event;
     int loop_timer_calls[2];
@@ -39,6 +56,13 @@ int main(void)
     loop = event_loop_create();
     if (loop == NULL) {
         return -1;
+    }
+
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGINT);
+    event = event_loop_create_signal(loop, singal_cb, "signal", NULL, -1, &mask);
+    if (event == NULL) {
+        goto exit;
     }
 
     event = event_loop_create_timer(loop, timer, "one-shot timer0", NULL, 0);

@@ -5,6 +5,7 @@
 #include <string.h>
 #include <limits.h>
 #include <unistd.h>
+#include <signal.h>
 #include <sys/eventfd.h>
 #include <sys/timerfd.h>
 #include <sys/signalfd.h>
@@ -85,7 +86,11 @@ static int event_loop_active_event(event_loop_t *event_loop, event_type_t *event
         ev.events = EPOLLOUT | EPOLLET;
         break;
     case EVENT_TYPE_TIMER:
+    case EVENT_TYPE_SIGNAL:
         ev.events = EPOLLIN | EPOLLET;
+        break;
+    case EVENT_TYPE_LINUX_EVENT:
+        ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
         break;
     }
 
@@ -157,9 +162,16 @@ void event_loop_destroy(event_loop_t *event_loop)
     free(event_loop);
 }
 
-static void event_copy_param(event_type_t *event, enum event_type_e type,
+static event_type_t *event_malloc(event_loop_t *event_loop, enum event_type_e type,
         event_func_t handler, const char *name, void *arg, int fd)
 {
+    event_type_t *event;
+
+    event = (event_type_t *)malloc(sizeof(event_type_t));
+    if (event == NULL) {
+        return NULL;
+    }
+
     (void)memset(event, 0, sizeof(event_type_t));
     event->type = type;
     event->handler = handler;
@@ -168,27 +180,23 @@ static void event_copy_param(event_type_t *event, enum event_type_e type,
     if (name != NULL) {
         strncpy(event->name, name, sizeof(event->name) - 1);
     }
+    
+    if (event_loop_add_event(event_loop, event) != 0) {
+        free(event);
+        event = NULL;
+    }
+
+    return event;
 }
 
 event_type_t *event_loop_create_read(event_loop_t *event_loop,
         event_func_t handler, const char *name, void *arg, int fd)
 {
-    event_type_t *event;
-
     if (event_loop == NULL || handler == NULL || fd < 0) {
         return NULL;
     }
 
-    event = (event_type_t *)malloc(sizeof(event_type_t));
-    if (event != NULL) {
-        event_copy_param(event, EVENT_TYPE_READ, handler, name, arg, fd);
-        if (event_loop_add_event(event_loop, event) != 0) {
-            free(event);
-            event = NULL;
-        }
-    }
-
-    return event;
+    return event_malloc(event_loop, EVENT_TYPE_READ, handler, name, arg, fd);
 }
 
 event_type_t *event_loop_create_timer(event_loop_t *event_loop,
@@ -257,21 +265,38 @@ event_type_t *event_loop_create_loop_timer_itimerspec(event_loop_t *event_loop,
         return NULL;
     }
 
-    event = (event_type_t *)malloc(sizeof(event_type_t));
+    event = event_malloc(event_loop, EVENT_TYPE_TIMER, handler, name, arg, timerfd);
     if (event == NULL) {
         (void)close(timerfd);
-        return NULL;
-    }
-
-    event_copy_param(event, EVENT_TYPE_TIMER, handler, name, arg, timerfd);
-    if (time.it_interval.tv_sec == 0 && time.it_interval.tv_nsec == 0) {
+    } else if (time.it_interval.tv_sec == 0 && time.it_interval.tv_nsec == 0) {
         event->flag |= EVENT_F_ONESHOT;
     }
 
-    if (event_loop_add_event(event_loop, event) != 0) {
-        (void)close(timerfd);
-        free(event);
-        event = NULL;
+    return event;
+}
+
+event_type_t *event_loop_create_signal(event_loop_t *event_loop,
+        event_func_t handler, const char *name, void *arg, int fd, const sigset_t *mask)
+{
+    int signal_fd;
+    event_type_t *event;
+
+    if (event_loop == NULL || handler == NULL || mask == NULL) {
+        return NULL;
+    }
+
+    if (sigprocmask(SIG_BLOCK, mask, NULL) < 0) {
+        return NULL;
+    }
+
+    signal_fd = signalfd(fd, mask, SFD_NONBLOCK | SFD_CLOEXEC);
+    if (signal_fd < 0) {
+        return NULL;
+    }
+
+    event = event_malloc(event_loop, EVENT_TYPE_SIGNAL, handler, name, arg, signal_fd);
+    if (event == NULL) {
+        (void)close(signal_fd);
     }
 
     return event;
@@ -298,6 +323,8 @@ void event_loop_cancel(event_type_t *event)
     case EVENT_TYPE_WRITE:
         break;
     case EVENT_TYPE_TIMER:
+    case EVENT_TYPE_SIGNAL:
+    case EVENT_TYPE_LINUX_EVENT:
         (void)close(event->fd);
         break;
     }
@@ -360,6 +387,7 @@ int event_loop_deal_event(event_type_t *event)
 {
     int ret;
     uint64_t timer_calls;
+    struct signalfd_siginfo fdsi;
     event_loop_t *event_loop;
 
     if (event == NULL) {
@@ -374,9 +402,21 @@ int event_loop_deal_event(event_type_t *event)
     switch (event->type) {
     case EVENT_TYPE_TIMER:
         ret = read(event->fd, &timer_calls, sizeof(uint64_t));
-        if (ret < 0) {
+        if (ret != sizeof(uint64_t)) {
+            event->data.timer_count = 0;
             return 0;
         }
+
+        event->data.timer_count = timer_calls;
+        break;
+    case EVENT_TYPE_SIGNAL:
+        ret = read(event->fd, &fdsi, sizeof(struct signalfd_siginfo));
+        if (ret != sizeof(struct signalfd_siginfo)) {
+            event->data.signo = 0;
+            return 0;
+        }
+
+        event->data.signo = fdsi.ssi_signo;
         break;
     case EVENT_TYPE_READ:
     case EVENT_TYPE_WRITE:
