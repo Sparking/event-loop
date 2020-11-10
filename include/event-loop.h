@@ -114,10 +114,14 @@ extern event_type_t *event_loop_create_loop_timer_itimerspec(event_loop_t *event
         event_func_t handler, const char *name, void *arg, struct itimerspec time);
 
 extern event_type_t *event_loop_create_signal(event_loop_t *event_loop,
-        event_func_t handler, const char *name, void *arg, int fd, const sigset_t *mask);
+        event_func_t handler, const char *name, void *arg, const sigset_t *mask);
 
 extern event_type_t *event_loop_create_linux_event(event_loop_t *event_loop,
         event_func_t handler, const char *name, void *arg);
+
+extern event_type_t *event_loop_alter_timer(event_type_t *event, struct timespec time);
+
+extern event_type_t *event_loop_alter_signal(event_type_t *event, const sigset_t *mask);
 
 extern void event_loop_cancel(event_type_t *event);
 

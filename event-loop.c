@@ -15,9 +15,9 @@ static int event_loop_count_epoll_size(const int fd)
 {
     int result;
 
-    result = ((fd >> (EVENT_LOOP_MAX_SHIFT_BITS)) + 1) << (EVENT_LOOP_MAX_SHIFT_BITS);
+    result = (((fd + 1) >> (EVENT_LOOP_MAX_SHIFT_BITS)) + 1) << (EVENT_LOOP_MAX_SHIFT_BITS);
     if (result < 0) {
-        result = INT_MAX - 1;
+        result = INT_MAX;
     }
 
     return result;
@@ -29,7 +29,7 @@ static int event_loop_reinit(event_loop_t *event_loop, int newfd)
     int epoll_volume;
     struct epoll_event *epoll_events;
 
-    if (newfd <= event_loop->epoll_volume) {
+    if (newfd < event_loop->epoll_volume) {
         if (newfd > event_loop->epoll_fd_max) {
             event_loop->epoll_fd_max = newfd;
         }
@@ -288,8 +288,8 @@ static int event_unmask_signal(sigset_t *dst, const sigset_t *set, const sigset_
     return sigandset(dst, set, &tmp);
 }
 
-event_type_t *event_loop_create_signal(event_loop_t *event_loop,
-        event_func_t handler, const char *name, void *arg, int fd, const sigset_t *mask)
+event_type_t *event_loop_create_signal(event_loop_t *event_loop, event_func_t handler,
+        const char *name, void *arg, const sigset_t *mask)
 {
     int ret;
     int signal_fd;
@@ -315,7 +315,7 @@ event_type_t *event_loop_create_signal(event_loop_t *event_loop,
         return NULL;
     }
 
-    signal_fd = signalfd(fd, mask, SFD_NONBLOCK | SFD_CLOEXEC);
+    signal_fd = signalfd(-1, mask, SFD_NONBLOCK | SFD_CLOEXEC);
     if (signal_fd < 0) {
         return NULL;
     }
