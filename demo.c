@@ -6,16 +6,29 @@
 
 static int singal_cb(event_type_t *event)
 {
+    int *count;
     int signo;
 
+    count = event_loop_event_arg(event);
     signo = event_loop_event_signo(event);
-    if (signo == SIGINT) {
-        printf("get intterrupt\n");
-    } else {
-        printf("get signal: %d\n", signo);
+    if (count == NULL) {
+        fprintf(stderr, "get signal %d, signal not get param, exit\n", signo);
+        event_loop_cancel(event);
+        return 0;
     }
 
-    printf("signal exit\n");
+    if (signo == SIGINT) {
+        fprintf(stdout, "get intterrupt\n");
+        *count += 1;
+        fprintf(stdout, "interrupt call time %d\n", *count);
+        if (*count >= 5) {
+            fprintf(stdout, "interrupt call time count the up-limit, exit\n");
+            event_loop_cancel(event);
+            return 0;
+        }
+    } else {
+        fprintf(stdout, "get signal: %d\n", signo);
+    }
 
     return 0;
 }
@@ -52,17 +65,27 @@ int main(void)
     event_loop_t *loop;
     event_type_t *event;
     int loop_timer_calls[2];
+    int signal_count;
 
     loop = event_loop_create();
     if (loop == NULL) {
         return -1;
     }
 
-    sigemptyset(&mask);
-    sigaddset(&mask, SIGINT);
-    event = event_loop_create_signal(loop, singal_cb, "signal", NULL, -1, &mask);
+    (void)sigemptyset(&mask);
+    (void)sigaddset(&mask, SIGINT);
+    (void)sigaddset(&mask, SIGABRT);
+    signal_count = 0;
+    event = event_loop_create_signal(loop, singal_cb, "signal", &signal_count,
+            -1, &mask);
     if (event == NULL) {
         goto exit;
+    }
+
+    event = event_loop_create_signal(loop, singal_cb, "signal2", &signal_count,
+            -1, &mask);
+    if (event == NULL) {
+        fprintf(stderr, "fail to create signal2 event\n");
     }
 
     event = event_loop_create_timer(loop, timer, "one-shot timer0", NULL, 0);
@@ -81,13 +104,13 @@ int main(void)
     }
 
     loop_timer_calls[0] = 0;
-    event = event_loop_create_loop_timer(loop, timer, "loop timer", &loop_timer_calls[0], 5);
+    event = event_loop_create_loop_timer(loop, timer, "loop timer1", &loop_timer_calls[0], 5);
     if (event == NULL) {
         goto exit;
     }
 
     loop_timer_calls[1] = 0;
-    event = event_loop_create_loop_timer(loop, timer, "loop timer", &loop_timer_calls[1], 6);
+    event = event_loop_create_loop_timer(loop, timer, "loop timer2", &loop_timer_calls[1], 6);
     if (event == NULL) {
         goto exit;
     }

@@ -123,6 +123,7 @@ event_loop_t *event_loop_create(void)
     event_loop->event_size = 0;
     INIT_LIST_HEAD(&event_loop->event_head);
     INIT_LIST_HEAD(&event_loop->event_unused);
+    (void)sigemptyset(&event_loop->event_sigset);
     event_loop->event_current = NULL;
     event_loop->epoll_fd = -1;
     event_loop->epoll_fd_max = -1;
@@ -180,7 +181,7 @@ static event_type_t *event_malloc(event_loop_t *event_loop, enum event_type_e ty
     if (name != NULL) {
         strncpy(event->name, name, sizeof(event->name) - 1);
     }
-    
+
     if (event_loop_add_event(event_loop, event) != 0) {
         free(event);
         event = NULL;
@@ -275,17 +276,42 @@ event_type_t *event_loop_create_loop_timer_itimerspec(event_loop_t *event_loop,
     return event;
 }
 
+static int event_unmask_signal(sigset_t *dst, const sigset_t *set, const sigset_t *unmasked)
+{
+    int i;
+    sigset_t tmp;
+
+    for (i = 0; i < sizeof(tmp) / sizeof(unsigned long int); ++i) {
+        ((unsigned long int *)&tmp)[i] = ~((unsigned long int *)unmasked)[i];
+    }
+
+    return sigandset(dst, set, &tmp);
+}
+
 event_type_t *event_loop_create_signal(event_loop_t *event_loop,
         event_func_t handler, const char *name, void *arg, int fd, const sigset_t *mask)
 {
+    int ret;
     int signal_fd;
+    sigset_t tmpset;
     event_type_t *event;
 
     if (event_loop == NULL || handler == NULL || mask == NULL) {
         return NULL;
     }
 
-    if (sigprocmask(SIG_BLOCK, mask, NULL) < 0) {
+    ret = event_unmask_signal(&tmpset, &event_loop->event_sigset, mask);
+    if (ret != 0) {
+        return NULL;
+    }
+
+    ret = memcmp(&tmpset, &event_loop->event_sigset, sizeof(sigset_t));
+    if (ret != 0) {
+        return NULL;
+    }
+
+    ret = sigprocmask(SIG_BLOCK, mask, NULL);
+    if (ret != 0) {
         return NULL;
     }
 
@@ -297,6 +323,13 @@ event_type_t *event_loop_create_signal(event_loop_t *event_loop,
     event = event_malloc(event_loop, EVENT_TYPE_SIGNAL, handler, name, arg, signal_fd);
     if (event == NULL) {
         (void)close(signal_fd);
+    } else {
+        (void)memcpy(&event->data.sig.set, mask, sizeof(sigset_t));
+        ret = sigorset(&event_loop->event_sigset, &event_loop->event_sigset, mask);
+        if (ret != 0) {
+            event_loop_cancel(event);
+            event = NULL;
+        }
     }
 
     return event;
@@ -322,8 +355,11 @@ void event_loop_cancel(event_type_t *event)
     case EVENT_TYPE_READ:
     case EVENT_TYPE_WRITE:
         break;
-    case EVENT_TYPE_TIMER:
     case EVENT_TYPE_SIGNAL:
+        (void)event_unmask_signal(&event->loop->event_sigset, &event->loop->event_sigset,
+                &event->data.sig.set);
+        (void)sigprocmask(SIG_UNBLOCK, &event->data.sig.set, NULL);
+    case EVENT_TYPE_TIMER:
     case EVENT_TYPE_LINUX_EVENT:
         (void)close(event->fd);
         break;
@@ -412,11 +448,11 @@ int event_loop_deal_event(event_type_t *event)
     case EVENT_TYPE_SIGNAL:
         ret = read(event->fd, &fdsi, sizeof(struct signalfd_siginfo));
         if (ret != sizeof(struct signalfd_siginfo)) {
-            event->data.signo = 0;
+            event->data.sig.no = 0;
             return 0;
         }
 
-        event->data.signo = fdsi.ssi_signo;
+        event->data.sig.no = fdsi.ssi_signo;
         break;
     case EVENT_TYPE_READ:
     case EVENT_TYPE_WRITE:

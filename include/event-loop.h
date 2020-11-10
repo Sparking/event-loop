@@ -7,9 +7,11 @@
 #include <sys/types.h>
 #include "list.h"
 
-#define EVENT_LOOP_INLINE               __attribute__((always_inline)) static inline 
+#define EVENT_LOOP_INLINE               __attribute__((always_inline)) static inline
 #define EVENT_TYPE_NAME_LEN             16
 #define EVENT_LOOP_MAX_SHIFT_BITS       10
+
+#define SIGNAL_SIZE                     (sizeof(sigset_t) << 3)
 
 typedef struct event_loop_s event_loop_t;
 typedef struct event_type_s event_type_t;
@@ -23,9 +25,14 @@ enum event_type_e {
     EVENT_TYPE_LINUX_EVENT,
 };
 
-union event_type_data_u {
+struct event_sig_s {
+    sigset_t            set;
+    int                 no;
+};
+
+union event_data_u {
     void               *ptr;
-    int                 signo;
+    struct event_sig_s  sig;
     uint64_t            timer_count;
 };
 
@@ -38,11 +45,9 @@ struct event_type_s {
 
 #define EVENT_F_ONESHOT                 (1 << 0)
 #define EVENT_F_CANCEL                  (1 << 1)
-
     int                 flag;
     int                 fd;
-    union event_type_data_u
-                        data;
+    union event_data_u  data;
     char                name[EVENT_TYPE_NAME_LEN];
 };
 
@@ -54,11 +59,13 @@ struct event_loop_s {
 
     event_type_t       *event_current;
 
+    sigset_t            event_sigset;
+
     int                 epoll_fd;
     int                 epoll_volume;
     int                 epoll_fd_max;
     struct epoll_event *epoll_events;
-    int                 epoll_get_cnt;       
+    int                 epoll_get_cnt;
 };
 
 EVENT_LOOP_INLINE int event_loop_event_fd(event_type_t *event)
@@ -73,7 +80,7 @@ EVENT_LOOP_INLINE void *event_loop_event_arg(event_type_t *event)
 
 EVENT_LOOP_INLINE int event_loop_event_signo(event_type_t *event)
 {
-    return event->data.signo;
+    return event->data.sig.no;
 }
 
 EVENT_LOOP_INLINE const char *event_loop_event_name(event_type_t *event)
