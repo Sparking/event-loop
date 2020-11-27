@@ -6,6 +6,7 @@
 #include <sys/epoll.h>
 #include <sys/types.h>
 #include "list.h"
+#include "rbtree.h"
 
 #define EVENT_LOOP_INLINE               __attribute__((always_inline)) static inline
 #define EVENT_TYPE_NAME_LEN             16
@@ -28,6 +29,20 @@ enum event_type_e {
 struct event_sig_s {
     sigset_t            set;
     int                 no;
+};
+
+typedef int (*event_ps_func_t)(int exit_code, void *arg);
+
+struct event_ps_hook_s {
+    struct rb_node      node;
+    pid_t               pid;
+    event_ps_func_t     handler;
+    void               *arg;
+};
+
+struct event_ps_hook_head_s {
+    struct rb_root      head;
+    size_t              size;
 };
 
 union event_data_u {
@@ -60,6 +75,9 @@ struct event_loop_s {
     event_type_t       *event_current;
 
     sigset_t            event_sigset;
+
+
+    event_type_t       *event_ps_signal;
 
     int                 epoll_fd;
     int                 epoll_volume;
@@ -113,16 +131,21 @@ extern event_type_t *event_loop_create_loop_timer(event_loop_t *event_loop,
 extern event_type_t *event_loop_create_loop_timer_itimerspec(event_loop_t *event_loop,
         event_func_t handler, const char *name, void *arg, struct itimerspec time);
 
+/* signal SIGCHILD not available */
 extern event_type_t *event_loop_create_signal(event_loop_t *event_loop,
         event_func_t handler, const char *name, void *arg, const sigset_t *mask);
 
 extern event_type_t *event_loop_create_linux_event(event_loop_t *event_loop,
         event_func_t handler, const char *name, void *arg);
 
+extern int event_loop_create_process(event_loop_t *event_loop,
+        event_ps_func_t handler, const char *name, void *arg, const pid_t pid);
+
 extern event_type_t *event_loop_alter_timer(event_type_t *event, struct timespec time);
 
 extern event_type_t *event_loop_alter_signal(event_type_t *event, const sigset_t *mask);
 
+/* allow to invoke this function repeatly */
 extern void event_loop_cancel(event_type_t *event);
 
 #endif /* _EVENT_LOOP_H_ */

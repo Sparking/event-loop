@@ -5,7 +5,7 @@ CFLAGS   := -g -O0 -shared -fPIC
 LDFLAGS  :=
 LIBS     :=
 
-src  := event-loop.c
+src  := event-loop.c rbtree.c
 objs := $(patsubst %.c,%.o,$(src))
 deps := $(patsubst %.c,%.d,$(src))
 

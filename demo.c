@@ -59,17 +59,45 @@ static int timer(event_type_t *event)
     return 0;
 }
 
+static void sub_ps(void)
+{
+    sleep(3);
+}
+
+static int sub_ps_cb(int status, void *arg)
+{
+    fprintf(stderr, "sub-process exit, code: %d.\n", status);
+    return status;
+}
+
 int main(void)
 {
+    int ret;
+    pid_t pid;
     sigset_t mask;
     event_loop_t *loop;
     event_type_t *event;
     int loop_timer_calls[2];
     int signal_count;
 
+    pid = vfork();
+    if (pid == 0) {
+        sub_ps();
+        exit(123);
+    } else if (pid < 0) {
+        goto exit;
+    }
+
     loop = event_loop_create();
     if (loop == NULL) {
         return -1;
+    }
+
+    ret = event_loop_create_process(loop, sub_ps_cb, NULL, NULL, pid);
+    if (ret < 0) {
+        fprintf(stderr, "add process handler failed!");
+    } else {
+        fprintf(stderr, "process %d has been registered.\n", pid);
     }
 
     (void)sigemptyset(&mask);

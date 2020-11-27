@@ -6,6 +6,8 @@
 #include <limits.h>
 #include <unistd.h>
 #include <signal.h>
+#include <sys/wait.h>
+#include <sys/types.h>
 #include <sys/eventfd.h>
 #include <sys/timerfd.h>
 #include <sys/signalfd.h>
@@ -129,6 +131,7 @@ event_loop_t *event_loop_create(void)
     event_loop->epoll_fd_max = -1;
     event_loop->epoll_volume = -1;
     event_loop->epoll_events = NULL;
+    event_loop->event_ps_signal = NULL;
     event_loop->epoll_get_cnt = 0;
     if (event_loop_reinit(event_loop, 0) != 0) {
         free(event_loop);
@@ -335,6 +338,160 @@ event_type_t *event_loop_create_signal(event_loop_t *event_loop, event_func_t ha
     return event;
 }
 
+static struct event_ps_hook_s *event_loop_find_ps_hook(struct event_ps_hook_head_s *h,
+    const pid_t pid)
+{
+    struct rb_node *node;
+    struct event_ps_hook_s *hook;
+
+    node = h->head.rb_node;
+    while (node != NULL) {
+        hook = rb_entry(node, struct event_ps_hook_s, node);
+        if (hook->pid == pid) {
+            return hook;
+        } else if (hook->pid < pid) {
+            node = node->rb_left;
+        } else {
+            node = node->rb_right;
+        }
+    }
+
+    return NULL;
+}
+
+static int event_loop_process_hook(event_type_t *event)
+{
+    int sig;
+    int ret;
+    int status;
+    pid_t pid;
+    struct event_ps_hook_s *ps_hook;
+    struct event_ps_hook_head_s *ps_hook_head;
+
+    sig = event_loop_event_signo(event);
+    if (sig != SIGCHLD) {
+        return -1;
+    }
+
+    pid = waitpid(-1, &status, WNOHANG);
+    if (pid <= 0) {
+        return 0;
+    }
+
+    ps_hook_head = (struct event_ps_hook_head_s *)event_loop_event_arg(event);
+    if (ps_hook_head == NULL) {
+        return -1;
+    }
+
+    ps_hook = event_loop_find_ps_hook(ps_hook_head, pid);
+    if (ps_hook == NULL) {
+        return 0;
+    }
+
+    ret = ps_hook->handler(status, ps_hook->arg);
+    rb_erase(&ps_hook->node, &ps_hook_head->head);
+    --ps_hook_head->size;
+    free(ps_hook);
+
+    return ret;
+}
+
+static event_type_t *event_loop_create_signalfd_sigchild(event_loop_t *event_loop)
+{
+    sigset_t sig;
+    event_type_t *event;
+    struct event_ps_hook_head_s *head;
+
+    if (event_loop == NULL) {
+        return NULL;
+    }
+
+    if (event_loop->event_ps_signal != NULL) {
+        return event_loop->event_ps_signal;
+    }
+
+    (void)sigemptyset(&sig);
+    (void)sigaddset(&sig, SIGCHLD);
+    head = (struct event_ps_hook_head_s *)malloc(sizeof(*head));
+    if (head == NULL) {
+        return NULL;
+    }
+
+    event = event_loop_create_signal(event_loop, event_loop_process_hook, NULL, (void *)head, &sig);
+    if (event == NULL) {
+        free(head);
+        return NULL;
+    }
+
+    head->head = RB_ROOT;
+    head->size = 0;
+    event_loop->event_ps_signal = event;
+
+    return event;
+}
+
+static int event_loop_add_ps_hook(event_loop_t *event_loop, const pid_t pid, event_ps_func_t handler,
+    void *arg)
+{
+    event_type_t *event;
+    struct event_ps_hook_s *hook;
+    struct event_ps_hook_head_s *hook_head;
+    struct rb_node **new, *parent;
+
+    if (event_loop->event_ps_signal == NULL) {
+        event = event_loop_create_signalfd_sigchild(event_loop);
+        if (event == NULL) {
+            return -1;
+        }
+    }
+
+    hook_head = (struct event_ps_hook_head_s *)event_loop_event_arg(event_loop->event_ps_signal);
+    new = &hook_head->head.rb_node;
+    parent = NULL;
+    while (*new != NULL) {
+        parent  = *new;
+        hook = rb_entry(parent, struct event_ps_hook_s, node);
+        if (hook->pid == pid) {
+            return -1;
+        } else if (hook->pid < pid) {
+            new = &parent->rb_left;
+        } else {
+            new = &parent->rb_right;
+        }
+    }
+
+    hook = (struct event_ps_hook_s *)malloc(sizeof(*hook));
+    if (hook == NULL) {
+        return -1;
+    }
+
+    hook->pid = pid;
+    hook->handler = handler;
+    hook->arg = arg;
+    rb_link_node(&hook->node, parent, new);
+    rb_insert_color(&hook->node, &hook_head->head);
+    ++hook_head->size;
+
+    return 0;
+}
+
+int event_loop_create_process(event_loop_t *event_loop, event_ps_func_t handler,
+        const char *name, void *arg, const pid_t pid)
+{
+    int ret;
+
+    if (event_loop == NULL || handler == NULL || pid <= 0) {
+        return -1;
+    }
+
+    ret = event_loop_add_ps_hook(event_loop, pid, handler, arg);
+    if (ret != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
 static void event_loop_remove_unused_event(event_type_t *event)
 {
     list_del(&event->node);
@@ -424,6 +581,7 @@ int event_loop_deal_event(event_type_t *event)
     int ret;
     uint64_t timer_calls;
     struct signalfd_siginfo fdsi;
+    struct event_ps_hook_head_s *hook_head;
     event_loop_t *event_loop;
 
     if (event == NULL) {
@@ -461,6 +619,15 @@ int event_loop_deal_event(event_type_t *event)
     }
 
     ret = event->handler(event);
+    if (event->loop->event_ps_signal == event) {
+        hook_head = (struct event_ps_hook_head_s *)event_loop_event_arg(event);
+        if (RB_EMPTY_ROOT(&hook_head->head)) {
+            free(hook_head);
+            event->arg = NULL;
+            event_loop_cancel(event);
+        }
+    }
+
     if (event->flag & EVENT_F_ONESHOT) {
         event_loop_cancel(event);
     }
