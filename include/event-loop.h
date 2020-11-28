@@ -138,8 +138,8 @@ extern event_type_t *event_loop_create_signal(event_loop_t *event_loop,
 extern event_type_t *event_loop_create_linux_event(event_loop_t *event_loop,
         event_func_t handler, const char *name, void *arg);
 
-extern int event_loop_create_process(event_loop_t *event_loop,
-        event_ps_func_t handler, const char *name, void *arg, const pid_t pid);
+extern pid_t event_loop_create_process(event_loop_t *event_loop,
+        event_ps_func_t handler, void *arg, char *exec_name, char **exec_arg);
 
 extern event_type_t *event_loop_alter_timer(event_type_t *event, struct timespec time);
 

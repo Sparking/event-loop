@@ -475,12 +475,21 @@ static int event_loop_add_ps_hook(event_loop_t *event_loop, const pid_t pid, eve
     return 0;
 }
 
-int event_loop_create_process(event_loop_t *event_loop, event_ps_func_t handler,
-        const char *name, void *arg, const pid_t pid)
+pid_t event_loop_create_process(event_loop_t *event_loop, event_ps_func_t handler,
+        void *arg, char *exec_name, char **exec_arg)
 {
     int ret;
+    pid_t pid;
 
-    if (event_loop == NULL || handler == NULL || pid <= 0) {
+    if (event_loop == NULL || handler == NULL || exec_name == NULL || exec_arg == NULL) {
+        return -1;
+    }
+
+    pid = vfork();
+    if (pid == 0) {
+        (void)execvp(exec_name, exec_arg);
+        exit(EXIT_FAILURE);
+    } else if (pid < 0) {
         return -1;
     }
 
@@ -489,7 +498,7 @@ int event_loop_create_process(event_loop_t *event_loop, event_ps_func_t handler,
         return -1;
     }
 
-    return 0;
+    return pid;
 }
 
 static void event_loop_remove_unused_event(event_type_t *event)
